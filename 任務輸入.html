@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="任務管理">
+<meta name="theme-color" content="#1e1e2e">
+<title>Robert 任務管理</title>
+<script src="https://alcdn.msauth.net/browser/3.28.1/js/msal-browser.min.js"></script>
+<style>
+  :root {
+    --short: #ef4444; --mid: #f97316; --long: #3b82f6;
+    --bg: #f0f2f5; --card: #fff; --text: #1e1e2e; --sub: #9ca3af; --radius: 16px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system,'Segoe UI',sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ── Setup banner ── */
+  #setup-banner {
+    background: #1e1e2e; color: white; padding: 20px 16px; text-align: center;
+    display: none;
+  }
+  #setup-banner h2 { font-size: 1rem; margin-bottom: 6px; }
+  #setup-banner p { font-size: 0.8rem; color: #aaa; margin-bottom: 14px; line-height: 1.6; }
+  .btn-connect { padding: 12px 28px; background: #3b82f6; color: white; border: none; border-radius: 10px; font-size: 0.9rem; font-weight: 700; cursor: pointer; }
+  .btn-connect:active { opacity: 0.8; }
+
+  /* ── Header ── */
+  .header { background: var(--text); color: white; padding: 16px 16px 10px; position: sticky; top: 0; z-index: 100; }
+  .header-top { display: flex; justify-content: space-between; align-items: flex-start; }
+  .header h1 { font-size: 1.05rem; font-weight: 700; }
+  .header-date { font-size: 0.72rem; color: #aaa; margin-top: 2px; }
+  .sync-status { display: flex; align-items: center; gap: 5px; font-size: 0.72rem; margin-top: 6px; }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: #6b7280; flex-shrink: 0; }
+  .sync-dot.ok { background: #22c55e; }
+  .sync-dot.err { background: #ef4444; }
+  .sync-dot.busy { background: #f59e0b; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ── Tabs ── */
+  .tabs { display: flex; background: white; border-bottom: 1px solid #eee; position: sticky; top: 70px; z-index: 99; overflow-x: auto; }
+  .tab { flex: 1; min-width: 52px; padding: 11px 4px; font-size: 0.78rem; font-weight: 600; text-align: center; cursor: pointer; border: none; background: none; color: var(--sub); white-space: nowrap; }
+  .tab.active { color: var(--text); border-bottom: 2px solid var(--text); }
+  .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 3px; }
+  .tab.short-tab .dot { background: var(--short); }
+  .tab.mid-tab .dot { background: var(--mid); }
+  .tab.long-tab .dot { background: var(--long); }
+
+  /* ── Pages ── */
+  .page { display: none; padding: 14px; }
+  .page.active { display: block; }
+
+  /* ── Input card ── */
+  .input-card { background: var(--card); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .input-card h2 { font-size: 0.8rem; font-weight: 700; color: var(--sub); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+  .field { margin-bottom: 9px; }
+  .field label { font-size: 0.75rem; color: var(--sub); display: block; margin-bottom: 3px; }
+  .field input { width: 100%; padding: 11px 13px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 0.9rem; outline: none; background: #fafafa; color: var(--text); font-family: inherit; transition: border-color 0.2s; }
+  .field input:focus { border-color: #555; background: white; }
+  .row { display: flex; gap: 9px; }
+  .row .field { flex: 1; }
+
+  .classify-hint { display: flex; align-items: center; gap: 6px; margin-bottom: 9px; padding: 7px 11px; border-radius: 8px; font-size: 0.78rem; font-weight: 600; }
+  .classify-hint.short { background: #fef2f2; color: var(--short); }
+  .classify-hint.mid { background: #fff7ed; color: var(--mid); }
+  .classify-hint.long { background: #eff6ff; color: var(--long); }
+  .classify-hint.none { background: #f3f4f6; color: var(--sub); }
+  .classify-hint .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+  .btn-add { width: 100%; padding: 13px; border: none; border-radius: 10px; font-size: 0.92rem; font-weight: 700; color: white; cursor: pointer; background: var(--text); transition: opacity 0.2s; }
+  .btn-add:active { opacity: 0.8; }
+
+  /* ── Task list ── */
+  .section-label { font-size: 0.75rem; font-weight: 700; color: var(--sub); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 9px; display: flex; align-items: center; gap: 6px; }
+  .section-label .count { background: var(--bg); color: var(--sub); font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; }
+
+  .task-card { background: var(--card); border-radius: 12px; padding: 13px 14px; margin-bottom: 9px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); display: flex; gap: 11px; align-items: flex-start; }
+  .task-card .left { flex: 1; min-width: 0; }
+  .task-card .name { font-size: 0.88rem; font-weight: 600; margin-bottom: 4px; word-break: break-word; }
+  .task-card .note { font-size: 0.76rem; color: var(--sub); margin-bottom: 5px; }
+  .task-card .meta { display: flex; flex-wrap: wrap; gap: 5px; }
+  .badge { font-size: 0.7rem; font-weight: 600; padding: 3px 8px; border-radius: 20px; }
+  .badge.short { background: #fef2f2; color: var(--short); }
+  .badge.mid { background: #fff7ed; color: var(--mid); }
+  .badge.long { background: #eff6ff; color: var(--long); }
+  .badge.date { background: #f3f4f6; color: #555; }
+  .badge.done-badge { background: #f0fdf4; color: #16a34a; }
+  .task-card .actions { display: flex; flex-direction: column; gap: 5px; }
+  .btn-done, .btn-del, .btn-edit { border: none; border-radius: 8px; padding: 6px 10px; font-size: 0.73rem; font-weight: 700; cursor: pointer; }
+  .btn-done { background: #f0fdf4; color: #16a34a; }
+  .btn-del { background: #fef2f2; color: var(--short); }
+  .btn-edit { background: #eff6ff; color: #3b82f6; }
+
+  /* ── Important checkbox ── */
+  .imp-row { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 10px 12px; background: #fefce8; border-radius: 10px; border: 1.5px solid #fde047; cursor: pointer; }
+  .imp-row input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: #eab308; }
+  .imp-row label { font-size: 0.88rem; font-weight: 700; color: #854d0e; cursor: pointer; }
+  .badge.imp { background: #fefce8; color: #854d0e; }
+
+  /* ── 6-panel grid ── */
+  .grid-section { margin-bottom: 16px; }
+  .grid-section-title { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 8px 12px; border-radius: 10px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .grid-section-title.imp-title { background: #fefce8; color: #854d0e; }
+  .grid-section-title.norm-title { background: #f3f4f6; color: #6b7280; }
+  .grid-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .grid-col { background: var(--card); border-radius: 12px; padding: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); min-height: 60px; }
+  .grid-col-title { font-size: 0.72rem; font-weight: 700; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1.5px solid #f0f0f0; }
+  .grid-col-title.short { color: var(--short); }
+  .grid-col-title.mid { color: var(--mid); }
+  .grid-col-title.long { color: var(--long); }
+  .grid-task { font-size: 0.75rem; padding: 5px 6px; border-radius: 6px; margin-bottom: 4px; display: flex; align-items: flex-start; gap: 5px; cursor: pointer; line-height: 1.35; }
+  .grid-task:hover { background: #f5f5f5; }
+  .grid-task.done-task { opacity: 0.45; text-decoration: line-through; }
+  .grid-task .gt-name { flex: 1; word-break: break-word; }
+  .grid-task .gt-date { font-size: 0.65rem; color: var(--sub); white-space: nowrap; }
+  .grid-empty { font-size: 0.72rem; color: #d1d5db; text-align: center; padding: 10px 0; }
+  .task-card.completed { opacity: 0.5; }
+  .task-card.completed .name { text-decoration: line-through; }
+
+  .empty { text-align: center; padding: 36px 20px; color: var(--sub); }
+  .empty .emoji { font-size: 2.2rem; margin-bottom: 8px; }
+  .empty p { font-size: 0.82rem; }
+
+  /* ── Settings page ── */
+  .settings-card { background: var(--card); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .settings-card h2 { font-size: 0.9rem; font-weight: 700; margin-bottom: 6px; }
+  .settings-card p { font-size: 0.8rem; color: var(--sub); margin-bottom: 14px; line-height: 1.6; }
+  .btn-settings { width: 100%; padding: 13px; border: none; border-radius: 10px; font-size: 0.88rem; font-weight: 700; color: white; cursor: pointer; margin-bottom: 9px; }
+  .btn-blue { background: #3b82f6; }
+  .btn-green { background: #16a34a; }
+  .btn-gray { background: #6b7280; }
+  .info-box { background: #f0fdf4; border-radius: 10px; padding: 13px; font-size: 0.78rem; color: #166534; line-height: 1.7; margin-bottom: 10px; }
+  .info-box strong { display: block; margin-bottom: 4px; font-size: 0.8rem; }
+  .warn-box { background: #fff7ed; border-radius: 10px; padding: 13px; font-size: 0.78rem; color: #92400e; line-height: 1.7; }
+  .warn-box strong { display: block; margin-bottom: 4px; }
+  .folder-path { font-family: monospace; font-size: 0.75rem; background: #f3f4f6; padding: 3px 7px; border-radius: 5px; color: #374151; word-break: break-all; }
+
+  /* ── Toast ── */
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1e1e2e; color: white; padding: 10px 20px; border-radius: 30px; font-size: 0.83rem; font-weight: 600; z-index: 999; opacity: 0; transition: opacity 0.3s; pointer-events: none; white-space: nowrap; max-width: 85vw; text-align: center; }
+  .toast.show { opacity: 1; }
+
+  /* ── Edit modal ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 200; opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+  .modal-overlay.open { opacity: 1; pointer-events: all; }
+  .modal-sheet { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-radius: 20px 20px 0 0; padding: 20px 16px 32px; z-index: 201; transform: translateY(100%); transition: transform 0.3s cubic-bezier(.32,.72,0,1); max-height: 90vh; overflow-y: auto; }
+  .modal-sheet.open { transform: translateY(0); }
+  .modal-handle { width: 40px; height: 4px; background: #e5e7eb; border-radius: 4px; margin: 0 auto 16px; }
+  .modal-title { font-size: 1rem; font-weight: 700; margin-bottom: 16px; }
+  .modal-field { margin-bottom: 11px; }
+  .modal-field label { font-size: 0.75rem; color: var(--sub); display: block; margin-bottom: 4px; }
+  .modal-field input, .modal-field select { width: 100%; padding: 11px 13px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 0.9rem; outline: none; background: #fafafa; color: var(--text); font-family: inherit; }
+  .modal-field input:focus, .modal-field select:focus { border-color: #555; background: white; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .btn-modal-save { flex: 1; padding: 13px; border: none; border-radius: 10px; font-size: 0.92rem; font-weight: 700; color: white; background: var(--text); cursor: pointer; }
+  .btn-modal-cancel { padding: 13px 18px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 0.92rem; font-weight: 600; color: var(--sub); background: white; cursor: pointer; }
+  .btn-edit { border: none; border-radius: 8px; padding: 6px 10px; font-size: 0.73rem; font-weight: 700; cursor: pointer; background: #f0f4ff; color: #3b82f6; }
+
+  /* ── Mind Map ── */
+  .mm-container { padding: 14px; position: relative; overflow: auto; -webkit-overflow-scrolling: touch; }
+  .mm-col-header { display: flex; gap: 0; min-width: 480px; margin-bottom: 10px; }
+  .mm-col-header div { flex: 1; text-align: center; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.05em; padding: 5px 4px; border-radius: 8px; }
+  .mm-project { display: flex; align-items: stretch; min-width: 480px; margin-bottom: 0; }
+  .mm-proj-divider { border: none; border-top: 1.5px dashed #e5e7eb; margin: 12px 0; min-width: 480px; }
+  .mm-level { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 4px 5px; position: relative; z-index: 1; }
+  .mm-node { border-radius: 10px; padding: 8px 10px; font-size: 0.75rem; font-weight: 600; line-height: 1.3; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; border: 1.5px solid transparent; }
+  .mm-node:hover { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0,0,0,0.12); }
+  .mm-node:active { transform: scale(0.97); }
+  .mm-name { display: block; }
+  .mm-date { font-size: 0.64rem; opacity: 0.65; margin-top: 2px; display: block; }
+  .mm-node.long  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+  .mm-node.mid   { background: #fff7ed; color: #9a3412; border-color: #fed7aa; }
+  .mm-node.short { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+  .mm-node.imp   { border-color: #fde047 !important; background: #fefce8 !important; color: #854d0e !important; }
+  .mm-node.done-node { opacity: 0.38; text-decoration: line-through; }
+  .mm-empty { font-size: 0.7rem; color: #e5e7eb; text-align: center; padding: 10px 0; }
+  #mind-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; overflow: visible; }
+</style>
+</head>
+<body>
+
+<!-- Setup Banner (shown when no folder connected) -->
+<div id="setup-banner">
+  <h2>📂 請連接 Manager 資料夾</h2>
+  <p>電腦 Chrome：直接選擇本機資料夾。<br>手機（iPhone/Android）：使用 OneDrive 雲端連線，任何裝置皆可讀寫。</p>
+  <button class="btn-connect" id="btn-banner-fsa" onclick="connectFolder()">📂 選擇本機資料夾（電腦）</button>
+  <button class="btn-connect" id="btn-banner-graph" style="background:#0ea5e9;margin-left:8px;" onclick="gotoSettings()">☁️ OneDrive 連線（手機）</button>
+</div>
+
+<div class="header">
+  <div class="header-top">
+    <div>
+      <h1>📋 Robert 任務管理</h1>
+      <div class="header-date" id="header-date"></div>
+    </div>
+  </div>
+  <div class="sync-status">
+    <div class="sync-dot" id="sync-dot"></div>
+    <span id="sync-label">載入中…</span>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab all-tab active" onclick="switchTab('all',this)"><span class="dot" style="background:#8b5cf6"></span>全部</button>
+  <button class="tab short-tab" onclick="switchTab('short',this)"><span class="dot"></span>短程</button>
+  <button class="tab mid-tab" onclick="switchTab('mid',this)"><span class="dot"></span>中程</button>
+  <button class="tab long-tab" onclick="switchTab('long',this)"><span class="dot"></span>長程</button>
+  <button class="tab" onclick="switchTab('mind',this)">🗺️</button>
+  <button class="tab" onclick="switchTab('settings',this)" style="color:#6b7280;">⚙️</button>
+</div>
+
+<!-- 全部 -->
+<div class="page active" id="page-all">
+  <div class="input-card">
+    <h2>新增任務</h2>
+    <div class="field"><label>任務名稱 *</label><input type="text" id="all-name" placeholder="例：完成 MDT 病例報告" /></div>
+    <div class="field"><label>備註說明</label><input type="text" id="all-note" placeholder="（選填）" /></div>
+    <div class="field"><label>截止日期</label><input type="date" id="all-date" oninput="updateHint('all')" /></div>
+    <div class="field"><label>週期重複</label><select id="all-recur"><option value="">不重複</option><option value="every day">🔁 每天</option><option value="every week">🔁 每週</option><option value="every month">🔁 每月</option></select></div>
+    <div id="all-hint" class="classify-hint none"><span class="dot"></span><span>選擇截止日期後自動分類</span></div>
+    <div class="imp-row" onclick="document.getElementById('all-imp').click()">
+      <input type="checkbox" id="all-imp" onclick="event.stopPropagation()" />
+      <label for="all-imp">⭐ 標記為重要</label>
+    </div>
+    <button class="btn-add" onclick="addTask('all')">＋ 新增任務</button>
+  </div>
+
+  <!-- 6-panel grid -->
+  <div class="grid-section">
+    <div class="grid-section-title imp-title">⭐ 重要 <span id="count-all">0</span></div>
+    <div class="grid-cols">
+      <div class="grid-col"><div class="grid-col-title short">🔴 短程</div><div id="grid-short-imp"></div></div>
+      <div class="grid-col"><div class="grid-col-title mid">🟠 中程</div><div id="grid-mid-imp"></div></div>
+      <div class="grid-col"><div class="grid-col-title long">🔵 長程</div><div id="grid-long-imp"></div></div>
+    </div>
+  </div>
+  <div class="grid-section">
+    <div class="grid-section-title norm-title">普通任務</div>
+    <div class="grid-cols">
+      <div class="grid-col"><div class="grid-col-title short">🔴 短程</div><div id="grid-short-norm"></div></div>
+      <div class="grid-col"><div class="grid-col-title mid">🟠 中程</div><div id="grid-mid-norm"></div></div>
+      <div class="grid-col"><div class="grid-col-title long">🔵 長程</div><div id="grid-long-norm"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 短程 -->
+<div class="page" id="page-short">
+  <div class="input-card">
+    <h2>🔴 短程任務 <span style="color:var(--short);font-weight:400">（1週內）</span></h2>
+    <div class="field"><input type="text" id="short-name" placeholder="任務名稱..." /></div>
+    <div class="field"><input type="text" id="short-note" placeholder="備註（選填）" /></div>
+    <div class="field"><input type="date" id="short-date" /></div>
+    <div class="field"><select id="short-recur"><option value="">不重複</option><option value="every day">🔁 每天</option><option value="every week">🔁 每週</option><option value="every month">🔁 每月</option></select></div>
+    <div class="imp-row" onclick="document.getElementById('short-imp').click()">
+      <input type="checkbox" id="short-imp" onclick="event.stopPropagation()" />
+      <label for="short-imp">⭐ 標記為重要</label>
+    </div>
+    <button class="btn-add" style="background:var(--short)" onclick="addTask('short')">＋ 新增短程任務</button>
+  </div>
+  <div class="section-label" style="color:var(--short)">短程任務 <span class="count" id="count-short">0</span></div>
+  <div id="list-short"></div>
+</div>
+
+<!-- 中程 -->
+<div class="page" id="page-mid">
+  <div class="input-card">
+    <h2>🟠 中程任務 <span style="color:var(--mid);font-weight:400">（3週內）</span></h2>
+    <div class="field"><input type="text" id="mid-name" placeholder="任務名稱..." /></div>
+    <div class="field"><input type="text" id="mid-note" placeholder="備註（選填）" /></div>
+    <div class="field"><input type="date" id="mid-date" /></div>
+    <div class="field"><select id="mid-recur"><option value="">不重複</option><option value="every day">🔁 每天</option><option value="every week">🔁 每週</option><option value="every month">🔁 每月</option></select></div>
+    <div class="imp-row" onclick="document.getElementById('mid-imp').click()">
+      <input type="checkbox" id="mid-imp" onclick="event.stopPropagation()" />
+      <label for="mid-imp">⭐ 標記為重要</label>
+    </div>
+    <button class="btn-add" style="background:var(--mid)" onclick="addTask('mid')">＋ 新增中程任務</button>
+  </div>
+  <div class="section-label" style="color:var(--mid)">中程任務 <span class="count" id="count-mid">0</span></div>
+  <div id="list-mid"></div>
+</div>
+
+<!-- 長程 -->
+<div class="page" id="page-long">
+  <div class="input-card">
+    <h2>🔵 長程任務 <span style="color:var(--long);font-weight:400">（3個月內）</span></h2>
+    <div class="field"><input type="text" id="long-name" placeholder="任務名稱..." /></div>
+    <div class="field"><input type="text" id="long-note" placeholder="備註（選填）" /></div>
+    <div class="field"><input type="date" id="long-date" /></div>
+    <div class="field"><select id="long-recur"><option value="">不重複</option><option value="every day">🔁 每天</option><option value="every week">🔁 每週</option><option value="every month">🔁 每月</option></select></div>
+    <div class="imp-row" onclick="document.getElementById('long-imp').click()">
+      <input type="checkbox" id="long-imp" onclick="event.stopPropagation()" />
+      <label for="long-imp">⭐ 標記為重要</label>
+    </div>
+    <button class="btn-add" style="background:var(--long)" onclick="addTask('long')">＋ 新增長程任務</button>
+  </div>
+  <div class="section-label" style="color:var(--long)">長程任務 <span class="count" id="count-long">0</span></div>
+  <div id="list-long"></div>
+</div>
+
+<!-- 設定 -->
+<div class="page" id="page-settings">
+  <div class="settings-card">
+    <h2>📂 本機資料夾（電腦 Chrome）</h2>
+    <p id="folder-status-text">尚未連接 Manager 資料夾。</p>
+    <button class="btn-settings btn-blue" onclick="connectFolder()">選擇 / 重新選擇 Manager 資料夾</button>
+    <button class="btn-settings btn-green" onclick="syncFromFiles()">🔄 從檔案重新載入</button>
+  </div>
+  <div class="settings-card">
+    <h2>☁️ OneDrive 雲端連線（手機適用）</h2>
+    <p>透過 Microsoft Graph 直接讀寫 OneDrive 上的 Manager 資料夾。iPhone / Android / 電腦皆可用，需先完成一次 Azure 應用註冊（見《任務輸入-手機版設定指南.md》）。</p>
+    <div class="modal-field">
+      <label>Application (Client) ID</label>
+      <input type="text" id="graph-cid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
+    </div>
+    <div class="modal-field">
+      <label>Manager 資料夾路徑（OneDrive 根目錄起，/ 分隔）</label>
+      <input type="text" id="graph-path" placeholder="文件/Doremai/Manager" autocomplete="off" />
+    </div>
+    <button class="btn-settings btn-blue" onclick="connectGraph()">☁️ 登入 Microsoft 並連線</button>
+    <button class="btn-settings btn-green" onclick="graphTest()">🔍 測試連線 / 尋找資料夾</button>
+    <button class="btn-settings btn-gray" onclick="graphSignOut()">登出 OneDrive 模式</button>
+    <p id="graph-status" style="font-size:0.78rem;color:var(--sub);line-height:1.6;word-break:break-all;"></p>
+  </div>
+  <div class="info-box">
+    <strong>✅ 跨裝置同步原理</strong>
+    兩種模式讀寫的是同一組 .md 檔案：<br>
+    ① 電腦 Chrome 直接讀寫本機 OneDrive 資料夾；② 手機透過 Microsoft Graph 讀寫雲端同一資料夾，OneDrive 自動雙向同步。
+  </div>
+  <div class="warn-box">
+    <strong>📱 手機說明</strong>
+    iOS Safari 與 Android Chrome 皆<u>不支援</u>直接存取本機資料夾，手機請使用上方「OneDrive 雲端連線」。注意：OneDrive 連線需以 https 網址開啟本頁（如 GitHub Pages），以 file:// 或 OneDrive 預覽開啟時無法登入 Microsoft。設定步驟見《任務輸入-手機版設定指南.md》。
+  </div>
+</div>
+
+<!-- 心智圖 -->
+<div class="page" id="page-mind">
+  <div class="mm-container" id="mind-container">
+    <div class="mm-col-header">
+      <div style="color:var(--long);background:#eff6ff;">🔵 長程</div>
+      <div style="color:var(--mid);background:#fff7ed;">🟠 中程</div>
+      <div style="color:var(--short);background:#fef2f2;">🔴 短程</div>
+    </div>
+    <div id="mind-projects" style="position:relative;z-index:1;"></div>
+    <svg id="mind-svg"></svg>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal()"></div>
+<div class="modal-sheet" id="modal-sheet">
+  <div class="modal-handle"></div>
+  <div class="modal-title">✏️ 編輯任務</div>
+  <input type="hidden" id="edit-id" />
+  <div class="modal-field">
+    <label>任務名稱 *</label>
+    <input type="text" id="edit-name" placeholder="任務名稱" />
+  </div>
+  <div class="modal-field">
+    <label>備註說明</label>
+    <input type="text" id="edit-note" placeholder="（選填）" />
+  </div>
+  <div class="modal-field">
+    <label>截止日期</label>
+    <input type="date" id="edit-date" />
+  </div>
+  <div class="modal-field">
+    <label>分類</label>
+    <select id="edit-type">
+      <option value="short">🔴 短程（1週內）</option>
+      <option value="mid">🟠 中程（3週內）</option>
+      <option value="long">🔵 長程（3個月內）</option>
+    </select>
+  </div>
+  <div class="modal-field">
+    <label>週期重複</label>
+    <select id="edit-recur"><option value="">不重複</option><option value="every day">🔁 每天</option><option value="every week">🔁 每週</option><option value="every month">🔁 每月</option></select>
+  </div>
+  <div class="imp-row" onclick="document.getElementById('edit-imp').click()">
+    <input type="checkbox" id="edit-imp" onclick="event.stopPropagation()" />
+    <label for="edit-imp">⭐ 標記為重要</label>
+  </div>
+  <div class="modal-actions">
+    <button class="btn-modal-cancel" onclick="closeModal()">取消</button>
+    <button class="btn-modal-save" onclick="saveEdit()">儲存</button>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════
+// 常數
+// ════════════════════════════════════════════
+const FILE_MAP = { short: 'Short-term.md', mid: 'Mid-term.md', long: 'Long-term.md' };
+const DB_NAME = 'robert-tasks-db', DB_VER = 1, STORE = 'handles';
+
+// ════════════════════════════════════════════
+// 狀態
+// ════════════════════════════════════════════
+let tasks = [];
+let dirHandle = null;
+let fsaSupported = ('showDirectoryPicker' in window);
+
+// 儲存模式：'fsa'（本機資料夾）| 'graph'（OneDrive 雲端）
+const LS_KEYS = { mode: 'ro_storage_mode', cid: 'ro_graph_client_id', path: 'ro_graph_folder' };
+let storageMode = localStorage.getItem(LS_KEYS.mode) || '';
+let msalApp = null;
+const GRAPH_SCOPES = ['Files.ReadWrite', 'User.Read'];
+
+// ════════════════════════════════════════════
+// IndexedDB — 儲存 / 讀取 dirHandle
+// ════════════════════════════════════════════
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror = e => rej(e);
+  });
+}
+async function saveHandle(h) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(h, 'dir');
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function loadHandle() {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get('dir');
+    req.onsuccess = () => res(req.result);
+    req.onerror = rej;
+  });
+}
+
+// ════════════════════════════════════════════
+// 同步狀態 UI
+// ════════════════════════════════════════════
+function setSync(state, msg) {
+  const dot = document.getElementById('sync-dot');
+  const lbl = document.getElementById('sync-label');
+  dot.className = 'sync-dot ' + (state === 'ok' ? 'ok' : state === 'busy' ? 'busy' : state === 'err' ? 'err' : '');
+  lbl.textContent = msg;
+}
+
+// ════════════════════════════════════════════
+// Markdown 解析 / 生成
+// ════════════════════════════════════════════
+function parseMd(text, type) {
+  const lines = text.split('\n');
+  const result = [];
+  for (const line of lines) {
+    // 只解析頂層任務（非縮排子任務）
+    const m = line.match(/^- \[([ x-])\] (.+)/);
+    if (!m) continue;
+    const done = m[1] === 'x';
+    let rest = m[2];
+    // Tasks plugin: 重要 ⏫ / 🔼 / 🔽
+    const important = rest.includes('⏫');
+    // Tasks plugin: 週期 🔁 every week
+    const recurM = rest.match(/🔁\s*(every\s+\w+)/i);
+    const recur = recurM ? recurM[1] : '';
+    rest = rest.replace(/🔁\s*every\s+\w+/i, '').trim();
+    // Tasks plugin: 截止日期 📅 YYYY-MM-DD
+    const dateM = rest.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
+    const deadline = dateM ? dateM[1] : '';
+    // 移除所有 emoji 標記與日期雜訊
+    // 📅 截止日、🗓️/📆 排程日、✅ 完成日、⏳ 開始日、➕ 建立日，以及毀損的替換字元 U+FFFD（🗓️ 被錯誤編碼後的產物）
+    rest = rest.replace(/[⏫🔼🔽]/g, '')
+               .replace(/(?:📅|🗓️|🗓|📆|✅|⏳|➕|⏰|�)\s*\d{4}-\d{2}-\d{2}/g, '')
+               .replace(/(?:🗓️|🗓|📆|✅|⏳|➕|⏰|�)/g, '')
+               .replace(/🆔\s*\S+/, '').replace(/⛔\s*\S+/, '').trim();
+    // 舊格式相容：（重要）（截止：date）
+    const oldImp = rest.includes('（重要）');
+    const oldDateM = rest.match(/（截止：(\d{4}-\d{2}-\d{2})）/);
+    rest = rest.replace('（重要）', '').replace(/（截止：[\d-]+）/, '').trim();
+    // 備註
+    const noteM = rest.match(/（([^）]+)）$/);
+    const note = noteM ? noteM[1] : '';
+    const name = rest.replace(/（[^）]+）$/, '').trim();
+    if (!name) continue;
+    result.push({
+      id: Date.now() + Math.random(), name, note,
+      deadline: deadline || (oldDateM ? oldDateM[1] : ''),
+      type, done, important: important || oldImp, recur, created: ''
+    });
+  }
+  return result;
+}
+
+function buildMd(type) {
+  const today = new Date().toISOString().split('T')[0];
+  const labels = { short: '短程任務（1週內）', mid: '中程任務（3週內）', long: '長程任務（3個月內）' };
+  const list = tasks.filter(t => t.type === type);
+  let s = `# ${labels[type]}\n> 最後更新：${today}\n\n`;
+  // 重要任務優先
+  const sorted = [...list].sort((a,b) => (b.important?1:0)-(a.important?1:0));
+  for (const t of sorted) {
+    s += `- [${t.done ? 'x' : ' '}] ${t.name}`;
+    if (t.important) s += ` ⏫`;
+    if (t.recur) s += ` 🔁 ${t.recur}`;
+    if (t.deadline) s += ` 📅 ${t.deadline}`;
+    if (t.note) s += ` <!-- ${t.note} -->`;
+    s += '\n';
+  }
+  return s;
+}
+
+// ════════════════════════════════════════════
+// 檔案讀 / 寫
+// ════════════════════════════════════════════
+async function readFile(filename) {
+  if (storageMode === 'graph') return await graphRead(filename);
+  try {
+    const fh = await dirHandle.getFileHandle(filename, { create: true });
+    const file = await fh.getFile();
+    return await file.text();
+  } catch { return ''; }
+}
+
+async function writeFile(filename, content) {
+  if (storageMode === 'graph') return await graphWrite(filename, content);
+  const fh = await dirHandle.getFileHandle(filename, { create: true });
+  const w = await fh.createWritable();
+  await w.write(content); await w.close();
+}
+
+async function syncFromFiles() {
+  if (storageMode !== 'graph' && !dirHandle) return;
+  setSync('busy', '讀取中…');
+  try {
+    tasks = [];
+    for (const [type, file] of Object.entries(FILE_MAP)) {
+      const text = await readFile(file);
+      tasks.push(...parseMd(text, type));
+    }
+    renderAll();
+    const modeTag = storageMode === 'graph' ? '☁️' : '📂';
+    setSync('ok', modeTag + ' 已同步 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
+  } catch(e) {
+    console.error(e);
+    if (e && e.message === 'REDIRECTING') return;
+    setSync('err', '讀取失敗');
+    showToast('❌ 無法讀取檔案：' + (e.message || '請至 ⚙️ 重新連接'));
+  }
+}
+
+async function saveToFiles() {
+  if (storageMode !== 'graph' && !dirHandle) {
+    // fallback: localStorage
+    localStorage.setItem('robert_tasks_fallback', JSON.stringify(tasks));
+    return;
+  }
+  setSync('busy', '儲存中…');
+  try {
+    for (const type of ['short','mid','long']) {
+      await writeFile(FILE_MAP[type], buildMd(type));
+    }
+    const modeTag = storageMode === 'graph' ? '☁️' : '📂';
+    setSync('ok', modeTag + ' 已儲存 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
+  } catch(e) {
+    console.error(e);
+    if (e && e.message === 'REDIRECTING') return;
+    setSync('err', '儲存失敗');
+    showToast('❌ 儲存失敗，請至 ⚙️ 重新連接');
+  }
+}
+
+// ════════════════════════════════════════════
+// 連接資料夾
+// ════════════════════════════════════════════
+async function connectFolder() {
+  if (!fsaSupported) {
+    showToast('此瀏覽器不支援直接存取檔案，請改用 Chrome');
+    return;
+  }
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await saveHandle(dirHandle);
+    storageMode = 'fsa';
+    localStorage.setItem(LS_KEYS.mode, 'fsa');
+    document.getElementById('setup-banner').style.display = 'none';
+    document.getElementById('folder-status-text').innerHTML =
+      '已連接：<span class="folder-path">' + dirHandle.name + '</span>';
+    await syncFromFiles();
+    showToast('✅ 資料夾連接成功！');
+  } catch(e) {
+    if (e.name !== 'AbortError') showToast('錯誤：' + e.name + ' — ' + e.message);
+    console.error(e);
+  }
+}
+
+// ════════════════════════════════════════════
+// OneDrive（Microsoft Graph）雲端模式
+// ════════════════════════════════════════════
+function graphCfg() {
+  return {
+    clientId: (localStorage.getItem(LS_KEYS.cid) || '').trim(),
+    folder: (localStorage.getItem(LS_KEYS.path) || '文件/Doremai/Manager').replace(/^\/+|\/+$/g, '')
+  };
+}
+
+function saveGraphInputs() {
+  const cidEl = document.getElementById('graph-cid');
+  const pathEl = document.getElementById('graph-path');
+  if (cidEl && cidEl.value.trim()) localStorage.setItem(LS_KEYS.cid, cidEl.value.trim());
+  if (pathEl && pathEl.value.trim()) localStorage.setItem(LS_KEYS.path, pathEl.value.trim());
+}
+
+function loadGraphInputs() {
+  const { clientId, folder } = graphCfg();
+  const cidEl = document.getElementById('graph-cid');
+  const pathEl = document.getElementById('graph-path');
+  if (cidEl) cidEl.value = clientId;
+  if (pathEl) pathEl.value = folder;
+}
+
+async function ensureMsal() {
+  const { clientId } = graphCfg();
+  if (!clientId) throw new Error('請先在 ⚙️ 設定填入 Client ID');
+  if (!window.msal) throw new Error('MSAL 程式庫未載入（請確認網路連線）');
+  if (location.protocol === 'file:') throw new Error('OneDrive 模式需以 https 網址開啟本頁（見設定指南）');
+  if (!msalApp) {
+    msalApp = new msal.PublicClientApplication({
+      auth: {
+        clientId,
+        authority: 'https://login.microsoftonline.com/common',
+        redirectUri: location.origin + location.pathname
+      },
+      cache: { cacheLocation: 'localStorage' }
+    });
+    await msalApp.initialize();
+  }
+  return msalApp;
+}
+
+async function graphToken() {
+  const app = await ensureMsal();
+  const accounts = app.getAllAccounts();
+  if (!accounts.length) throw new Error('NOT_SIGNED_IN');
+  try {
+    const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    return r.accessToken;
+  } catch (e) {
+    // Silent 失敗 → 導向登入（頁面會重新載入）
+    await app.acquireTokenRedirect({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    throw new Error('REDIRECTING');
+  }
+}
+
+function graphFileUrl(filename) {
+  const { folder } = graphCfg();
+  const p = folder.split('/').map(encodeURIComponent).join('/');
+  return 'https://graph.microsoft.com/v1.0/me/drive/root:/' + p + '/' + encodeURIComponent(filename) + ':/content';
+}
+
+async function graphRead(filename) {
+  const tok = await graphToken();
+  const r = await fetch(graphFileUrl(filename), { headers: { Authorization: 'Bearer ' + tok } });
+  if (r.status === 404) return '';
+  if (!r.ok) throw new Error('讀取 ' + filename + ' 失敗（HTTP ' + r.status + '）');
+  return await r.text();
+}
+
+async function graphWrite(filename, content) {
+  const tok = await graphToken();
+  const r = await fetch(graphFileUrl(filename), {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'text/plain; charset=utf-8' },
+    body: content
+  });
+  if (!r.ok) throw new Error('儲存 ' + filename + ' 失敗（HTTP ' + r.status + '）');
+}
+
+async function connectGraph() {
+  saveGraphInputs();
+  try {
+    const app = await ensureMsal();
+    storageMode = 'graph';
+    localStorage.setItem(LS_KEYS.mode, 'graph');
+    const accounts = app.getAllAccounts();
+    if (accounts.length) {
+      // 已有帳號 → 直接同步
+      updateGraphStatus();
+      document.getElementById('setup-banner').style.display = 'none';
+      await syncFromFiles();
+      showToast('✅ OneDrive 已連線');
+    } else {
+      await app.loginRedirect({ scopes: GRAPH_SCOPES });
+    }
+  } catch (e) {
+    if (e.message === 'REDIRECTING') return;
+    showToast('❌ ' + e.message);
+    document.getElementById('graph-status').textContent = '❌ ' + e.message;
+  }
+}
+
+async function graphTest() {
+  saveGraphInputs();
+  const statusEl = document.getElementById('graph-status');
+  statusEl.textContent = '測試中…';
+  try {
+    const tok = await graphToken();
+    const { folder } = graphCfg();
+    const p = folder.split('/').map(encodeURIComponent).join('/');
+    const r = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/' + p + ':/children?$select=name&$top=50',
+      { headers: { Authorization: 'Bearer ' + tok } });
+    if (r.ok) {
+      const j = await r.json();
+      const names = j.value.map(v => v.name);
+      const hasFiles = ['Short-term.md','Mid-term.md','Long-term.md'].filter(f => names.includes(f));
+      statusEl.textContent = '✅ 找到資料夾（含 ' + hasFiles.length + '/3 個任務檔）：' + names.slice(0, 12).join('、');
+    } else if (r.status === 404) {
+      const rr = await fetch('https://graph.microsoft.com/v1.0/me/drive/root/children?$select=name&$top=50',
+        { headers: { Authorization: 'Bearer ' + tok } });
+      const jj = await rr.json();
+      statusEl.textContent = '❌ 找不到「' + folder + '」。OneDrive 根目錄實際內容：' +
+        jj.value.map(v => v.name).join('、') + '（提示：中文「文件」資料夾在雲端可能叫 Documents）';
+    } else {
+      statusEl.textContent = '❌ HTTP ' + r.status;
+    }
+  } catch (e) {
+    if (e.message === 'NOT_SIGNED_IN') { statusEl.textContent = '請先點「登入 Microsoft 並連線」'; return; }
+    if (e.message === 'REDIRECTING') return;
+    statusEl.textContent = '❌ ' + e.message;
+  }
+}
+
+function graphSignOut() {
+  // 僅清除本機快取（不導向 Microsoft 全域登出）
+  Object.keys(localStorage).forEach(k => {
+    if (k.startsWith('msal.') || k.includes('login.windows') || k.includes('login.microsoftonline')) localStorage.removeItem(k);
+  });
+  msalApp = null;
+  if (storageMode === 'graph') { storageMode = ''; localStorage.removeItem(LS_KEYS.mode); }
+  updateGraphStatus();
+  showToast('已登出 OneDrive 模式');
+}
+
+function updateGraphStatus() {
+  const el = document.getElementById('graph-status');
+  if (!el) return;
+  try {
+    if (msalApp) {
+      const accounts = msalApp.getAllAccounts();
+      if (accounts.length) {
+        el.textContent = '✅ 已登入：' + (accounts[0].username || accounts[0].name) +
+          (storageMode === 'graph' ? '（目前使用 OneDrive 模式）' : '');
+        return;
+      }
+    }
+  } catch (e) {}
+  el.textContent = storageMode === 'graph' ? '尚未登入' : '';
+}
+
+function gotoSettings() {
+  const btn = document.querySelector('.tab[onclick*="settings"]');
+  if (btn) switchTab('settings', btn);
+}
+
+// ════════════════════════════════════════════
+// 分類邏輯
+// ════════════════════════════════════════════
+function classify(dateStr) {
+  if (!dateStr) return 'long';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diff = Math.ceil((new Date(dateStr) - today) / 86400000);
+  return diff <= 7 ? 'short' : diff <= 21 ? 'mid' : 'long';
+}
+function classifyLabel(type) {
+  return { short:'🔴 短程（1週內）', mid:'🟠 中程（3週內）', long:'🔵 長程（3個月）' }[type];
+}
+function updateHint(p) {
+  const v = document.getElementById(p+'-date').value;
+  const h = document.getElementById(p+'-hint'); if (!h) return;
+  if (!v) { h.className='classify-hint none'; h.innerHTML='<span class="dot"></span><span>選擇截止日期後自動分類</span>'; return; }
+  const t = classify(v);
+  h.className='classify-hint '+t;
+  h.innerHTML=`<span class="dot"></span><span>將歸類為：${classifyLabel(t)}</span>`;
+}
+
+// ════════════════════════════════════════════
+// CRUD
+// ════════════════════════════════════════════
+async function addTask(prefix) {
+  const nameEl = document.getElementById(prefix+'-name');
+  const noteEl = document.getElementById(prefix+'-note');
+  const dateEl = document.getElementById(prefix+'-date');
+  const name = nameEl.value.trim();
+  if (!name) { showToast('請輸入任務名稱'); nameEl.focus(); return; }
+  const dateVal = dateEl ? dateEl.value : '';
+  const type = (prefix === 'all') ? classify(dateVal) : prefix;
+  const impEl = document.getElementById(prefix+'-imp');
+  const recurEl = document.getElementById(prefix+'-recur');
+  const important = impEl ? impEl.checked : false;
+  const recur = recurEl ? recurEl.value : '';
+  tasks.unshift({ id: Date.now(), name, note: noteEl?.value.trim()||'', deadline: dateVal, type, done: false, important, recur, created: new Date().toISOString().split('T')[0] });
+  nameEl.value=''; if(noteEl) noteEl.value=''; dateEl.value='';
+  if(impEl) impEl.checked = false;
+  if(recurEl) recurEl.value = '';
+  if(prefix==='all') updateHint('all');
+  renderAll();
+  await saveToFiles();
+  showToast('✅ 已加入 ' + classifyLabel(type));
+}
+
+async function toggleDone(id) {
+  const t = tasks.find(t=>t.id===id);
+  if(t){ t.done=!t.done; renderAll(); await saveToFiles(); }
+}
+async function deleteTask(id) {
+  tasks = tasks.filter(t=>t.id!==id);
+  renderAll(); await saveToFiles(); showToast('已刪除');
+}
+
+// ════════════════════════════════════════════
+// 渲染
+// ════════════════════════════════════════════
+function renderList(cid, items) {
+  const el = document.getElementById(cid);
+  if (!items.length) { el.innerHTML='<div class="empty"><div class="emoji">📭</div><p>尚無任務</p></div>'; return; }
+  el.innerHTML = items.map(t=>`
+    <div class="task-card ${t.done?'completed':''}">
+      <div class="left">
+        <div class="name">${t.name}</div>
+        ${t.note?`<div class="note">${t.note}</div>`:''}
+        <div class="meta">
+          ${t.important?'<span class="badge imp">⭐ 重要</span>':''}
+          <span class="badge ${t.type}">${{short:'短程',mid:'中程',long:'長程'}[t.type]}</span>
+          ${t.recur?`<span class="badge" style="background:#f0fdf4;color:#166534">🔁 ${{['every day']:'每天',['every week']:'每週',['every month']:'每月'}[t.recur]||t.recur}</span>`:''}
+          ${t.done?'<span class="badge done-badge">✅ 完成</span>':''}
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn-edit" onclick="editTask(${t.id})">編輯</button>
+        <button class="btn-done" onclick="toggleDone(${t.id})">${t.done?'恢復':'完成'}</button>
+        <button class="btn-del" onclick="deleteTask(${t.id})">刪除</button>
+      </div>
+    </div>`).join('');
+}
+
+// ════════════════════════════════════════════
+// 編輯任務
+// ════════════════════════════════════════════
+function editTask(id) {
+  const t = tasks.find(t => t.id === id);
+  if (!t) return;
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-name').value = t.name;
+  document.getElementById('edit-note').value = t.note || '';
+  document.getElementById('edit-date').value = t.deadline || '';
+  document.getElementById('edit-type').value = t.type;
+  document.getElementById('edit-recur').value = t.recur || '';
+  document.getElementById('edit-imp').checked = !!t.important;
+  document.getElementById('modal-overlay').classList.add('open');
+  document.getElementById('modal-sheet').classList.add('open');
+  setTimeout(() => document.getElementById('edit-name').focus(), 300);
+}
+
+async function saveEdit() {
+  const id = Number(document.getElementById('edit-id').value);
+  const name = document.getElementById('edit-name').value.trim();
+  if (!name) { showToast('請輸入任務名稱'); return; }
+  const t = tasks.find(t => t.id === id);
+  if (!t) return;
+  t.name = name;
+  t.note = document.getElementById('edit-note').value.trim();
+  t.deadline = document.getElementById('edit-date').value;
+  t.type = document.getElementById('edit-type').value;
+  t.recur = document.getElementById('edit-recur').value;
+  t.important = document.getElementById('edit-imp').checked;
+  closeModal();
+  renderAll();
+  await saveToFiles();
+  showToast('✅ 已更新');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  document.getElementById('modal-sheet').classList.remove('open');
+}
+
+function renderGridCol(elId, items) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!items.length) { el.innerHTML = '<div class="grid-empty">—</div>'; return; }
+  el.innerHTML = items.map(t => `
+    <div class="grid-task ${t.done?'done-task':''}" onclick="editTask(${t.id})">
+      <span class="gt-name">${t.name}</span>
+    </div>`).join('');
+}
+
+function renderAll() {
+  const short=tasks.filter(t=>t.type==='short');
+  const mid=tasks.filter(t=>t.type==='mid');
+  const long=tasks.filter(t=>t.type==='long');
+
+  // 6-panel grid
+  renderGridCol('grid-short-imp', short.filter(t=>t.important));
+  renderGridCol('grid-mid-imp',   mid.filter(t=>t.important));
+  renderGridCol('grid-long-imp',  long.filter(t=>t.important));
+  renderGridCol('grid-short-norm', short.filter(t=>!t.important));
+  renderGridCol('grid-mid-norm',   mid.filter(t=>!t.important));
+  renderGridCol('grid-long-norm',  long.filter(t=>!t.important));
+
+  // 分類頁列表
+  renderList('list-short', short);
+  renderList('list-mid', mid);
+  renderList('list-long', long);
+
+  // 計數
+  const impCount = tasks.filter(t=>t.important&&!t.done).length;
+  document.getElementById('count-all').textContent = impCount ? `${impCount} 重要` : '';
+  document.getElementById('count-short').textContent=short.filter(t=>!t.done).length;
+  document.getElementById('count-mid').textContent=mid.filter(t=>!t.done).length;
+  document.getElementById('count-long').textContent=long.filter(t=>!t.done).length;
+}
+
+// ════════════════════════════════════════════
+// Tab 切換
+// ════════════════════════════════════════════
+function switchTab(tab, btn) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('page-'+tab).classList.add('active');
+  btn.classList.add('active');
+  if (tab === 'mind') requestAnimationFrame(renderMindMap);
+}
+
+// ════════════════════════════════════════════
+// Toast
+// ════════════════════════════════════════════
+function showToast(msg) {
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2400);
+}
+
+// ════════════════════════════════════════════
+// 初始化
+// ════════════════════════════════════════════
+async function init() {
+  document.getElementById('header-date').textContent =
+    new Date().toLocaleDateString('zh-TW',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+  loadGraphInputs();
+
+  // ── 1. 處理 Microsoft 登入導回 ──
+  const { clientId } = graphCfg();
+  if (clientId && window.msal && location.protocol !== 'file:') {
+    try {
+      const app = await ensureMsal();
+      const resp = await app.handleRedirectPromise();
+      if (resp && resp.account) {
+        app.setActiveAccount(resp.account);
+        storageMode = 'graph';
+        localStorage.setItem(LS_KEYS.mode, 'graph');
+      }
+    } catch(e) { console.error('MSAL redirect error', e); }
+  }
+
+  // ── 2. OneDrive 雲端模式 ──
+  if (storageMode === 'graph') {
+    try {
+      const app = await ensureMsal();
+      if (app.getAllAccounts().length) {
+        updateGraphStatus();
+        document.getElementById('setup-banner').style.display = 'none';
+        await syncFromFiles();
+        return;
+      }
+    } catch(e) { console.error(e); }
+    // 有設定但未登入 → 顯示 banner
+    document.getElementById('setup-banner').style.display = 'block';
+    setSync('err', '☁️ OneDrive 尚未登入');
+    updateGraphStatus();
+    renderAll();
+    if (!fsaSupported) document.getElementById('btn-banner-fsa').style.display = 'none';
+    return;
+  }
+
+  // ── 3. 本機資料夾模式（電腦 Chrome）──
+  if (fsaSupported) {
+    try {
+      const saved = await loadHandle();
+      if (saved) {
+        const perm = await saved.requestPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          dirHandle = saved;
+          storageMode = 'fsa';
+          document.getElementById('folder-status-text').innerHTML =
+            '已連接：<span class="folder-path">' + dirHandle.name + '</span>';
+          await syncFromFiles();
+          return;
+        }
+      }
+    } catch(e) {}
+  } else {
+    // 手機瀏覽器：隱藏本機資料夾按鈕，引導使用 OneDrive
+    document.getElementById('btn-banner-fsa').style.display = 'none';
+  }
+
+  // ── 4. 尚未連接任何模式 ──
+  document.getElementById('setup-banner').style.display = 'block';
+  setSync('err', '尚未連接資料夾');
+  const saved = localStorage.getItem('robert_tasks_fallback');
+  if (saved && !tasks.length) { try { tasks = JSON.parse(saved); } catch(e) {} }
+  renderAll();
+}
+
+// ════════════════════════════════════════════
+// 心智圖
+// ════════════════════════════════════════════
+function getProjectKey(name) {
+  // Extract project prefix (part before first '-'), unless that prefix contains '/'
+  const idx = name.indexOf('-');
+  if (idx > 0) {
+    const pre = name.substring(0, idx).trim();
+    if (!pre.includes('/')) return pre;
+  }
+  return name.trim();
+}
+
+function buildHierarchy() {
+  const groups = {};
+  for (const t of tasks) {
+    const key = getProjectKey(t.name);
+    if (!groups[key]) groups[key] = { key, long: [], mid: [], short: [] };
+    groups[key][t.type].push(t);
+  }
+
+  // Merge orphan child groups (no long tasks) into a long-term parent
+  // when the parent key contains the orphan key (e.g. "2026/5/1-5/3 KIX" contains "KIX")
+  const keys = Object.keys(groups);
+  const toDelete = [];
+  for (const key of keys) {
+    const g = groups[key];
+    if (g.long.length === 0 && (g.mid.length > 0 || g.short.length > 0)) {
+      for (const parentKey of keys) {
+        if (parentKey === key || toDelete.includes(parentKey)) continue;
+        const pg = groups[parentKey];
+        if (pg.long.length > 0 && parentKey.includes(key)) {
+          pg.mid.push(...g.mid);
+          pg.short.push(...g.short);
+          toDelete.push(key);
+          break;
+        }
+      }
+    }
+  }
+  toDelete.forEach(k => delete groups[k]);
+
+  // Sort: projects with long > mid > short tasks first
+  return Object.values(groups).sort((a, b) => {
+    const s = g => (g.long.length > 0 ? 100 : 0) + (g.mid.length > 0 ? 10 : 0) + (g.short.length > 0 ? 1 : 0);
+    const d = (a.long[0]||a.mid[0]||a.short[0]||{}).deadline || 'z';
+    const e = (b.long[0]||b.mid[0]||b.short[0]||{}).deadline || 'z';
+    return s(b) !== s(a) ? s(b) - s(a) : d.localeCompare(e);
+  });
+}
+
+function renderMindMap() {
+  const container = document.getElementById('mind-container');
+  const projDiv = document.getElementById('mind-projects');
+  if (!container || !projDiv) return;
+
+  const projects = buildHierarchy();
+
+  const mkNodes = (arr, cls) => {
+    if (!arr.length) return '<div class="mm-empty">—</div>';
+    return arr.map(t => `
+      <div class="mm-node ${cls}${t.done?' done-node':''}${t.important?' imp':''}"
+           onclick="editTask(${t.id})" id="mm-n-${t.id}">
+        <span class="mm-name">${t.name}</span>
+      </div>`).join('');
+  };
+
+  projDiv.innerHTML = projects.map((proj, i) => `
+    ${i > 0 ? '<hr class="mm-proj-divider"/>' : ''}
+    <div class="mm-project">
+      <div class="mm-level">${mkNodes(proj.long, 'long')}</div>
+      <div class="mm-level">${mkNodes(proj.mid, 'mid')}</div>
+      <div class="mm-level">${mkNodes(proj.short, 'short')}</div>
+    </div>`).join('');
+
+  requestAnimationFrame(drawMindLines);
+}
+
+function getNodePos(node, container) {
+  const nr = node.getBoundingClientRect();
+  const cr = container.getBoundingClientRect();
+  const sx = container.scrollLeft, sy = container.scrollTop;
+  return {
+    left:  nr.left  - cr.left + sx,
+    right: nr.right - cr.left + sx,
+    top:   nr.top   - cr.top  + sy,
+    bottom:nr.bottom- cr.top  + sy,
+    midY:  nr.top   - cr.top  + sy + nr.height / 2,
+  };
+}
+
+function drawMindLines() {
+  const container = document.getElementById('mind-container');
+  const svg = document.getElementById('mind-svg');
+  if (!container || !svg) return;
+
+  const W = container.scrollWidth, H = container.scrollHeight;
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  let paths = '';
+
+  document.querySelectorAll('#mind-projects .mm-project').forEach(proj => {
+    const longNodes  = [...proj.querySelectorAll('.mm-level:nth-child(1) .mm-node')];
+    const midNodes   = [...proj.querySelectorAll('.mm-level:nth-child(2) .mm-node')];
+    const shortNodes = [...proj.querySelectorAll('.mm-level:nth-child(3) .mm-node')];
+
+    function fanLines(srcs, tgts, stroke) {
+      if (!srcs.length || !tgts.length) return;
+      const sp = srcs.map(n => getNodePos(n, container));
+      const srcX = sp[0].right;
+      const srcY = (Math.min(...sp.map(p => p.top)) + Math.max(...sp.map(p => p.bottom))) / 2;
+      tgts.forEach(tn => {
+        const tp = getNodePos(tn, container);
+        const x2 = tp.left, y2 = tp.midY;
+        const cp = (x2 - srcX) * 0.55;
+        paths += `<path d="M${srcX},${srcY} C${srcX+cp},${srcY} ${x2-cp},${y2} ${x2},${y2}" stroke="${stroke}" stroke-width="1.5" fill="none" opacity="0.6"/>`;
+      });
+    }
+
+    fanLines(longNodes, midNodes, '#93c5fd');
+    fanLines(midNodes, shortNodes, '#fdba74');
+  });
+
+  svg.innerHTML = paths;
+}
+
+// Enter 鍵
+['all','short','mid','long'].forEach(p => {
+  const el = document.getElementById(p+'-name');
+  if(el) el.addEventListener('keydown', e => { if(e.key==='Enter') addTask(p); });
+});
+
+init();
+</script>
+</body>
+</html>
