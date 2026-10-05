@@ -154,6 +154,9 @@
   .modal-field input:focus, .modal-field select:focus { border-color: #555; background: white; }
   .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
   .btn-modal-save { flex: 1; padding: 13px; border: none; border-radius: 10px; font-size: 0.92rem; font-weight: 700; color: white; background: var(--text); cursor: pointer; }
+  .btn-modal-complete { width: 100%; margin-top: 12px; padding: 13px; border: none; border-radius: 10px; font-size: 0.92rem; font-weight: 700; color: #fff; background: #16a34a; cursor: pointer; transition: background .15s; }
+  .btn-modal-complete.confirm { background: #b45309; }
+  .complete-hint { font-size: 0.72rem; color: var(--sub); text-align: center; margin-top: 6px; line-height: 1.5; }
   .btn-modal-cancel { padding: 13px 18px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 0.92rem; font-weight: 600; color: var(--sub); background: white; cursor: pointer; }
   .btn-edit { border: none; border-radius: 8px; padding: 6px 10px; font-size: 0.73rem; font-weight: 700; cursor: pointer; background: #f0f4ff; color: #3b82f6; }
 
@@ -387,6 +390,8 @@
     <button class="btn-modal-cancel" onclick="closeModal()">取消</button>
     <button class="btn-modal-save" onclick="saveEdit()">儲存</button>
   </div>
+  <button class="btn-modal-complete" id="btn-complete" onclick="completeAndRemove()">✅ 任務完成・從清單移除</button>
+  <div class="complete-hint" id="complete-hint">完成紀錄寫入 完成紀錄.md（週回顧計入完成率）</div>
 </div>
 
 <script>
@@ -477,13 +482,20 @@ function parseMd(text, type) {
                .replace(/(?:📅|🗓️|🗓|📆|✅|⏳|➕|⏰|�)\s*\d{4}-\d{2}-\d{2}/g, '')
                .replace(/(?:🗓️|🗓|📆|✅|⏳|➕|⏰|�)/g, '')
                .replace(/🆔\s*\S+/, '').replace(/⛔\s*\S+/, '').trim();
+    // HTML 註解 <!-- … --> = 備註（buildMd 把備註寫成註解；Cowork 也用註解寫說明）
+    // 先抽出，避免註解被當成任務名稱的一部分
+    const cmts = [];
+    rest = rest.replace(/<!--([\s\S]*?)-->/g, (_, c) => { if (c.trim()) cmts.push(c.trim()); return ' '; });
+    // 已抽出的截止日若在名稱中殘留成裸日期（過去亂碼修復留下的），一併移除
+    if (deadline) rest = rest.split(deadline).join(' ');
+    rest = rest.replace(/\s{2,}/g, ' ').trim();
     // 舊格式相容：（重要）（截止：date）
     const oldImp = rest.includes('（重要）');
     const oldDateM = rest.match(/（截止：(\d{4}-\d{2}-\d{2})）/);
     rest = rest.replace('（重要）', '').replace(/（截止：[\d-]+）/, '').trim();
     // 備註
     const noteM = rest.match(/（([^）]+)）$/);
-    const note = noteM ? noteM[1] : '';
+    const note = [noteM ? noteM[1] : '', ...cmts].filter(Boolean).join('；');
     const name = rest.replace(/（[^）]+）$/, '').trim();
     if (!name) continue;
     result.push({
@@ -654,7 +666,7 @@ async function saveToFiles() {
       const modeTag = storageMode === 'graph' ? '☁️' : '📂';
       setSync('ok', modeTag + ' 已儲存 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
       if (merged) showToast('🔀 已合併其他裝置的變更');
-      return;
+      return true;
     }
     throw new Error('檔案持續被其他裝置修改，請稍後再試');
   } catch(e) {
@@ -662,6 +674,7 @@ async function saveToFiles() {
     if (e && e.message === 'REDIRECTING') return;
     setSync('err', '儲存失敗');
     showToast('❌ 儲存失敗：' + (e.message || '請至 ⚙️ 重新連接'));
+    return false;
   } finally {
     saving = false;
     if (savePending) { savePending = false; saveToFiles(); }
@@ -980,6 +993,7 @@ function editTask(id) {
   document.getElementById('edit-type').value = t.type;
   document.getElementById('edit-recur').value = t.recur || '';
   document.getElementById('edit-imp').checked = !!t.important;
+  resetCompleteBtn(t);
   document.getElementById('modal-overlay').classList.add('open');
   document.getElementById('modal-sheet').classList.add('open');
   setTimeout(() => document.getElementById('edit-name').focus(), 300);
@@ -1001,6 +1015,103 @@ async function saveEdit() {
   renderAll();
   await saveToFiles();
   showToast('✅ 已更新');
+}
+
+// ════════════════════════════════════════════
+// 任務完成 → 從清單移除（2026-10-05 新增）
+// 一般任務：從任務檔刪除，並在 完成紀錄.md 留一行（週回顧據此計算完成率）
+// 週期任務（🔁）：不刪除，記錄本次完成後把截止日推到下一次
+// 防誤觸：按第一次變成「再按一次確認」，3 秒內再按才執行
+// ════════════════════════════════════════════
+const DONE_LOG = '完成紀錄.md';
+let completeArmTimer = null;
+
+function localDate(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function nextRecurDate(deadline, recur) {
+  const today = localDate(new Date());
+  const d = deadline ? new Date(deadline + 'T00:00:00') : new Date();
+  const step = () => {
+    if (/day/i.test(recur)) d.setDate(d.getDate() + 1);
+    else if (/week/i.test(recur)) d.setDate(d.getDate() + 7);
+    else if (/month/i.test(recur)) d.setMonth(d.getMonth() + 1);
+    else d.setDate(d.getDate() + 7);
+  };
+  step();
+  let guard = 0;
+  while (localDate(d) <= today && guard++ < 400) step();   // 過期很久的週期任務 → 直接跳到今天之後
+  return localDate(d);
+}
+function resetCompleteBtn(t) {
+  clearTimeout(completeArmTimer);
+  const btn = document.getElementById('btn-complete');
+  const hint = document.getElementById('complete-hint');
+  if (!btn) return;
+  btn.classList.remove('confirm');
+  btn.dataset.armed = '';
+  if (t && t.recur) {
+    btn.textContent = '✅ 完成這次・排下一次（' + nextRecurDate(t.deadline, t.recur) + '）';
+    hint.textContent = '週期任務不會刪除；本次完成寫入 完成紀錄.md';
+  } else {
+    btn.textContent = '✅ 任務完成・從清單移除';
+    hint.textContent = '完成紀錄寫入 完成紀錄.md（週回顧計入完成率）';
+  }
+}
+
+async function appendDoneLog(t, completedDeadline) {
+  if (storageMode !== 'graph' && !dirHandle) return;
+  const today = localDate(new Date());
+  const label = { short: '短程', mid: '中程', long: '長程' }[t.type] || t.type;
+  let line = `- [x] ${t.name}`;
+  if (t.important) line += ' ⏫';
+  if (t.recur) line += ` 🔁 ${t.recur}`;
+  if (completedDeadline) line += ` 📅 ${completedDeadline}`;
+  line += ` ✅ ${today} ［${label}］`;
+  if (t.note) line += ` <!-- ${t.note} -->`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await readFileV(DONE_LOG);
+    let text = r.text && r.text.trim()
+      ? r.text.replace(/\s*$/, '\n')
+      : '# 完成紀錄\n> 由任務輸入介面「任務完成」自動寫入；週回顧依 ✅ 日期計入當週完成\n\n';
+    text += line + '\n';
+    try { await writeFileV(DONE_LOG, text, r.ver); return; }
+    catch (e) { if (e && e.message === 'CONFLICT') continue; throw e; }
+  }
+  throw new Error('完成紀錄.md 持續被其他裝置修改');
+}
+
+async function completeAndRemove() {
+  const btn = document.getElementById('btn-complete');
+  const id = Number(document.getElementById('edit-id').value);
+  const t = tasks.find(t => t.id === id);
+  if (!t) { closeModal(); return; }
+  if (btn.dataset.armed !== '1') {               // 第一次按：武裝
+    btn.dataset.armed = '1';
+    btn.classList.add('confirm');
+    btn.textContent = '⚠️ 再按一次確認完成';
+    clearTimeout(completeArmTimer);
+    completeArmTimer = setTimeout(() => resetCompleteBtn(t), 3000);
+    return;
+  }
+  resetCompleteBtn(null);
+  closeModal();
+  const snap = { ...t };
+  let ok;
+  if (t.recur) {
+    t.deadline = nextRecurDate(t.deadline, t.recur);
+    t.done = false;
+    renderAll();
+    ok = await saveToFiles();
+  } else {
+    tasks = tasks.filter(x => x.id !== id);
+    renderAll();
+    ok = await saveToFiles();
+  }
+  if (ok === false) return;                      // 任務檔沒存成功 → 不寫完成紀錄（錯誤已提示）
+  try { await appendDoneLog(snap, snap.deadline); }
+  catch (e) { console.error(e); showToast('⚠️ 任務已更新，但完成紀錄寫入失敗：' + (e.message || e)); return; }
+  showToast(snap.recur ? '✅ 本次完成，下次 ' + t.deadline : '✅ 已完成並移除：' + snap.name);
 }
 
 function closeModal() {
