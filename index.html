@@ -8,7 +8,8 @@
 <meta name="apple-mobile-web-app-title" content="任務管理">
 <meta name="theme-color" content="#1e1e2e">
 <title>Robert 任務管理</title>
-<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script><style>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
+<style>
   :root {
     --short: #ef4444; --mid: #f97316; --long: #3b82f6;
     --bg: #f0f2f5; --card: #fff; --text: #1e1e2e; --sub: #9ca3af; --radius: 16px;
@@ -470,7 +471,9 @@ function parseMd(text, type) {
     const deadline = dateM ? dateM[1] : '';
     // 移除所有 emoji 標記與日期雜訊
     // 📅 截止日、🗓️/📆 排程日、✅ 完成日、⏳ 開始日、➕ 建立日，以及毀損的替換字元 U+FFFD（🗓️ 被錯誤編碼後的產物）
-    rest = rest.replace(/[⏫🔼🔽]/g, '')
+    // 注意：必須用 u 旗標。沒有 u 時 🔼🔽 會被拆成代理字元，連帶把 📅 的前半截刪掉，
+    // 存檔時殘留的半個字元就變成「�」——這就是任務檔裡亂碼的真正來源。
+    rest = rest.replace(/[⏫🔼🔽]/gu, '')
                .replace(/(?:📅|🗓️|🗓|📆|✅|⏳|➕|⏰|�)\s*\d{4}-\d{2}-\d{2}/g, '')
                .replace(/(?:🗓️|🗓|📆|✅|⏳|➕|⏰|�)/g, '')
                .replace(/🆔\s*\S+/, '').replace(/⛔\s*\S+/, '').trim();
@@ -492,10 +495,11 @@ function parseMd(text, type) {
   return result;
 }
 
-function buildMd(type) {
-  const today = new Date().toISOString().split('T')[0];
+function buildMd(type, source) {
+  const d = new Date();
+  const today = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
   const labels = { short: '短程任務（1週內）', mid: '中程任務（3週內）', long: '長程任務（3個月內）' };
-  const list = tasks.filter(t => t.type === type);
+  const list = (source || tasks).filter(t => t.type === type);
   let s = `# ${labels[type]}\n> 最後更新：${today}\n\n`;
   // 重要任務優先
   const sorted = [...list].sort((a,b) => (b.important?1:0)-(a.important?1:0));
@@ -513,31 +517,96 @@ function buildMd(type) {
 // ════════════════════════════════════════════
 // 檔案讀 / 寫
 // ════════════════════════════════════════════
-async function readFile(filename) {
-  if (storageMode === 'graph') return await graphRead(filename);
+// ── 版本化讀取：回傳 { text, ver }（ver = OneDrive eTag 或本機 lastModified）──
+async function readFileV(filename) {
+  if (storageMode === 'graph') return await graphReadV(filename);
   try {
     const fh = await dirHandle.getFileHandle(filename, { create: true });
     const file = await fh.getFile();
-    return await file.text();
-  } catch { return ''; }
+    return { text: await file.text(), ver: String(file.lastModified) };
+  } catch { return { text: '', ver: '' }; }
 }
+async function readFile(filename) { return (await readFileV(filename)).text; }
 
-async function writeFile(filename, content) {
-  if (storageMode === 'graph') return await graphWrite(filename, content);
+// 寫入；graph 模式帶 If-Match，若雲端版本已變 → 丟出 CONFLICT
+async function writeFileV(filename, content, ifMatch) {
+  if (storageMode === 'graph') return await graphWrite(filename, content, ifMatch);
   const fh = await dirHandle.getFileHandle(filename, { create: true });
   const w = await fh.createWritable();
   await w.write(content); await w.close();
+  const f = await fh.getFile();
+  return String(f.lastModified);
+}
+async function writeFile(filename, content) { return await writeFileV(filename, content); }
+
+// ════════════════════════════════════════════
+// 跨裝置合併（PC / NB / 手機 / Cowork 同時改檔時不互相覆蓋）
+// base  = 上次從檔案載入時的狀態
+// mine  = 本頁目前狀態（含使用者剛做的修改）
+// theirs= 儲存前重新讀到的檔案（可能已被其他裝置或 Cowork 改過）
+// ════════════════════════════════════════════
+const TASK_FIELDS = ['name','note','deadline','type','done','important','recur'];
+let base = null;            // { text:{short,mid,long}, ver:{...}, tasks:[...] }
+let lastSyncAt = 0;
+let saving = false, savePending = false;
+
+function snapshot(list) { return list.map(t => ({ ...t })); }
+function keyMap(list) {
+  const m = new Map(), seen = {};
+  for (const t of list) {
+    const k0 = (t.name || '').trim();
+    seen[k0] = (seen[k0] || 0) + 1;
+    m.set(seen[k0] > 1 ? k0 + '#' + seen[k0] : k0, t);
+  }
+  return m;
+}
+function sameTask(a, b) { return TASK_FIELDS.every(f => (a[f] ?? '') === (b[f] ?? '')); }
+function sig(list, type) {
+  return JSON.stringify(list.filter(t => t.type === type)
+    .map(t => TASK_FIELDS.map(f => t[f] ?? '')).sort());
 }
 
-async function syncFromFiles() {
+function merge3(baseList, mineList, theirsList) {
+  const B = keyMap(baseList), M = keyMap(mineList), T = keyMap(theirsList);
+  const out = new Map();
+  // 1) 本機新增（排最前）
+  for (const [k, m] of M) if (!B.has(k)) out.set(k, m);
+  // 2) 以對方（檔案最新版）為底
+  for (const [k, t] of T) if (!out.has(k)) out.set(k, { ...t, id: Date.now() + Math.random() });
+  // 3) 本機刪除 → 從結果移除
+  for (const k of B.keys()) if (!M.has(k)) out.delete(k);
+  // 4) 本機修改 → 逐欄位套用（只覆蓋本機有改的欄位）
+  for (const [k, m] of M) {
+    const b = B.get(k);
+    if (!b || sameTask(b, m)) continue;
+    const cur = out.get(k);
+    if (!cur) { out.set(k, m); continue; }           // 對方刪了、本機改了 → 保留本機
+    const merged = { ...cur, id: m.id };
+    for (const f of TASK_FIELDS) if ((m[f] ?? '') !== (b[f] ?? '')) merged[f] = m[f];
+    out.set(k, merged);
+  }
+  return [...out.values()];
+}
+
+async function readAll() {
+  const text = {}, ver = {}, parsed = [];
+  for (const [type, file] of Object.entries(FILE_MAP)) {
+    const r = await readFileV(file);
+    text[type] = r.text; ver[type] = r.ver;
+    parsed.push(...parseMd(r.text, type));
+  }
+  return { text, ver, tasks: parsed };
+}
+
+async function syncFromFiles(silent) {
   if (storageMode !== 'graph' && !dirHandle) return;
-  setSync('busy', '讀取中…');
+  if (saving) return;
+  if (!silent) setSync('busy', '讀取中…');
   try {
-    tasks = [];
-    for (const [type, file] of Object.entries(FILE_MAP)) {
-      const text = await readFile(file);
-      tasks.push(...parseMd(text, type));
-    }
+    const fresh = await readAll();
+    tasks = fresh.tasks;
+    base = { text: fresh.text, ver: fresh.ver, tasks: snapshot(fresh.tasks) };
+    lastSyncAt = Date.now();
     renderAll();
     const modeTag = storageMode === 'graph' ? '☁️' : '📂';
     setSync('ok', modeTag + ' 已同步 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
@@ -551,24 +620,63 @@ async function syncFromFiles() {
 
 async function saveToFiles() {
   if (storageMode !== 'graph' && !dirHandle) {
-    // fallback: localStorage
     localStorage.setItem('robert_tasks_fallback', JSON.stringify(tasks));
     return;
   }
+  if (saving) { savePending = true; return; }
+  saving = true;
   setSync('busy', '儲存中…');
   try {
-    for (const type of ['short','mid','long']) {
-      await writeFile(FILE_MAP[type], buildMd(type));
+    let merged = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const fresh = await readAll();
+      const baseTasks = base ? base.tasks : fresh.tasks;
+      const remoteChanged = !base || ['short','mid','long'].some(t => fresh.text[t] !== base.text[t]);
+      const result = remoteChanged ? merge3(baseTasks, tasks, fresh.tasks) : tasks;
+      if (remoteChanged && base) merged = true;
+      const newText = { ...fresh.text }, newVer = { ...fresh.ver };
+      try {
+        for (const type of ['short','mid','long']) {
+          // 任務內容沒變的檔案不重寫 → 保留 Cowork 的註解與排版
+          if (sig(result, type) === sig(fresh.tasks, type)) continue;
+          const md = buildMd(type, result);
+          newVer[type] = await writeFileV(FILE_MAP[type], md, fresh.ver[type]);
+          newText[type] = md;
+        }
+      } catch (e) {
+        if (e && e.message === 'CONFLICT') { merged = true; continue; }  // 寫入瞬間又被改 → 重來
+        throw e;
+      }
+      tasks = result;
+      base = { text: newText, ver: newVer, tasks: snapshot(result) };
+      lastSyncAt = Date.now();
+      renderAll();
+      const modeTag = storageMode === 'graph' ? '☁️' : '📂';
+      setSync('ok', modeTag + ' 已儲存 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
+      if (merged) showToast('🔀 已合併其他裝置的變更');
+      return;
     }
-    const modeTag = storageMode === 'graph' ? '☁️' : '📂';
-    setSync('ok', modeTag + ' 已儲存 · ' + new Date().toLocaleTimeString('zh-TW', {hour:'2-digit',minute:'2-digit'}));
+    throw new Error('檔案持續被其他裝置修改，請稍後再試');
   } catch(e) {
     console.error(e);
     if (e && e.message === 'REDIRECTING') return;
     setSync('err', '儲存失敗');
-    showToast('❌ 儲存失敗，請至 ⚙️ 重新連接');
+    showToast('❌ 儲存失敗：' + (e.message || '請至 ⚙️ 重新連接'));
+  } finally {
+    saving = false;
+    if (savePending) { savePending = false; saveToFiles(); }
   }
 }
+
+// 切回此分頁／視窗時自動拉最新（避免拿舊畫面在另一台改）
+function autoRefresh() {
+  if (document.visibilityState !== 'visible') return;
+  if (saving || Date.now() - lastSyncAt < 20000) return;
+  if (document.getElementById('modal-sheet')?.classList.contains('open')) return;
+  syncFromFiles(true);
+}
+document.addEventListener('visibilitychange', autoRefresh);
+window.addEventListener('focus', autoRefresh);
 
 // ════════════════════════════════════════════
 // 連接資料夾
@@ -597,10 +705,14 @@ async function connectFolder() {
 // ════════════════════════════════════════════
 // OneDrive（Microsoft Graph）雲端模式
 // ════════════════════════════════════════════
+// 預設值：新裝置（PC / NB / 手機）免再貼 Client ID，直接按登入即可。
+// Client ID 為公開識別碼（SPA + PKCE），非秘密金鑰。
+const GRAPH_DEFAULT_CID = '0f1b14f1-ffd2-4e3c-bc58-35ad38b28823';
+const GRAPH_DEFAULT_PATH = '文件/Doremai/Manager';
 function graphCfg() {
   return {
-    clientId: (localStorage.getItem(LS_KEYS.cid) || '').trim(),
-    folder: (localStorage.getItem(LS_KEYS.path) || '文件/Doremai/Manager').replace(/^\/+|\/+$/g, '')
+    clientId: (localStorage.getItem(LS_KEYS.cid) || GRAPH_DEFAULT_CID).trim(),
+    folder: (localStorage.getItem(LS_KEYS.path) || GRAPH_DEFAULT_PATH).replace(/^\/+|\/+$/g, '')
   };
 }
 
@@ -658,22 +770,34 @@ function graphFileUrl(filename) {
   return 'https://graph.microsoft.com/v1.0/me/drive/root:/' + p + '/' + encodeURIComponent(filename) + ':/content';
 }
 
-async function graphRead(filename) {
-  const tok = await graphToken();
-  const r = await fetch(graphFileUrl(filename), { headers: { Authorization: 'Bearer ' + tok } });
-  if (r.status === 404) return '';
-  if (!r.ok) throw new Error('讀取 ' + filename + ' 失敗（HTTP ' + r.status + '）');
-  return await r.text();
+function graphItemUrl(filename) {
+  return graphFileUrl(filename).replace(/:\/content$/, '');
 }
 
-async function graphWrite(filename, content) {
+// 先取 metadata（eTag + 下載網址），再抓內容；cache: no-store 避免讀到舊版
+async function graphReadV(filename) {
   const tok = await graphToken();
-  const r = await fetch(graphFileUrl(filename), {
-    method: 'PUT',
-    headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'text/plain; charset=utf-8' },
-    body: content
-  });
+  const meta = await fetch(graphItemUrl(filename), { headers: { Authorization: 'Bearer ' + tok }, cache: 'no-store' });
+  if (meta.status === 404) return { text: '', ver: '' };
+  if (!meta.ok) throw new Error('讀取 ' + filename + ' 失敗（HTTP ' + meta.status + '）');
+  const j = await meta.json();
+  const dl = j['@microsoft.graph.downloadUrl'];
+  let r = null;
+  if (dl) { try { r = await fetch(dl, { cache: 'no-store' }); } catch (e) { r = null; } }
+  if (!r || !r.ok) r = await fetch(graphFileUrl(filename), { headers: { Authorization: 'Bearer ' + tok }, cache: 'no-store' });
+  if (!r.ok) throw new Error('讀取 ' + filename + ' 失敗（HTTP ' + r.status + '）');
+  return { text: await r.text(), ver: j.eTag || '' };
+}
+async function graphRead(filename) { return (await graphReadV(filename)).text; }
+
+async function graphWrite(filename, content, ifMatch) {
+  const tok = await graphToken();
+  const headers = { Authorization: 'Bearer ' + tok, 'Content-Type': 'text/plain; charset=utf-8' };
+  if (ifMatch) headers['If-Match'] = ifMatch;
+  const r = await fetch(graphFileUrl(filename), { method: 'PUT', headers, body: content });
+  if (r.status === 412) throw new Error('CONFLICT');
   if (!r.ok) throw new Error('儲存 ' + filename + ' 失敗（HTTP ' + r.status + '）');
+  try { const j = await r.json(); return j.eTag || ''; } catch { return ''; }
 }
 
 async function connectGraph() {
